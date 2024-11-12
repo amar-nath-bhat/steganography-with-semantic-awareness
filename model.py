@@ -96,7 +96,8 @@ axs[1].imshow(mask)
 axs[1].set_title('Segmentation Mask')
 axs[2].imshow(masked_image)
 axs[2].set_title('Masked Image')
-plt.show()
+plt.savefig('output/masked/masked_image.png')
+# plt.show()
 
 # Model
 
