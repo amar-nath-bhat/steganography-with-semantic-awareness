@@ -1,159 +1,103 @@
-from model import DataGenerator, give_color_to_seg_img, UNet, val_gen
+from utils import give_color_to_seg_img
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 from stegano import lsb
-from itertools import product
-from random import randint
+import os
 
-# Load the model and weights
-model = UNet()
-model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["acc"])
-model.load_weights("seg_model.hdf5")
-
-# Set up variables
-max_show = 5
-imgs, segs = next(val_gen)
-pred = model.predict(imgs)
-
-# Define a custom generator based on segment locations
-def segment_generator(segment_mask):
+def visualize_and_save(imgs, pred, segs, i, output_dir="output"):
     """
-    Generator function to select pixels only in specific segments.
-    
-    :param segment_mask: 2D numpy array with 1s indicating target segment pixels, 0s elsewhere.
-    :return: Generator that yields single integer indices for pixels within the target segments.
+    Visualize and save prediction and ground truth overlays.
     """
-    rows, cols = segment_mask.shape
-    for x, y in product(range(rows), range(cols)):
-        if segment_mask[x, y] == 1:  # Only yield indices within the target segment
-            yield x * cols + y  # Convert (x, y) to a single integer index
+    os.makedirs(f"{output_dir}/pred", exist_ok=True)
+    os.makedirs(f"{output_dir}/overlay", exist_ok=True)
 
-# Set the target label and secret message
-
-secret_message = "The quick brown fox jumps over the lazy dog. " * 50  # Large message
-target_label = 3 # Randomly select a target label
-
-# Embed the secret message in each image
-for i in range(max_show):
-    # Get the segmentation mask for the target segment
-    
-    target_segment = segs[i, ..., target_label]  # Extract the target label mask for image i
-    target_segment = (target_segment > 0).astype(int)  # Convert to binary mask
-
-    # Generate color-coded segmentation images for visualization
     _p = give_color_to_seg_img(np.argmax(pred[i], axis=-1))
     _s = give_color_to_seg_img(np.argmax(segs[i], axis=-1))
     
-    # Overlay segmentation on original image
     predimg = cv2.addWeighted(imgs[i] / 255, 0.5, _p, 0.5, 0)
     trueimg = cv2.addWeighted(imgs[i] / 255, 0.5, _s, 0.5, 0)
     
-    # Display the images
     plt.figure(figsize=(6, 6))
     plt.subplot(121)
     plt.title("Prediction")
     plt.imshow(predimg)
-    pred_filename = f"output/pred/pred_{i}.png"
-    plt.savefig(pred_filename, dpi=150)
-    
-    img = imgs[i]
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert to RGB for PIL compatibility
-    img_pil = Image.fromarray(img_rgb)
-    
-    # Overlay target segment on original image for visualization
-    target_segment_colored = img_rgb.copy()
-    target_segment_colored[target_segment == 1] = [255, 0, 0]  # Color the segment in red
-
-    # Blend the colored segment with the original image
-    overlay_img = cv2.addWeighted(img_rgb, 0.7, target_segment_colored, 0.3, 0)
-
-    # Display the image with the highlighted segment
-    plt.imshow(overlay_img)
-    plt.title("Original Image with Target Segment Highlighted")
     plt.axis("off")
-    plt.savefig(f"output/overlay/overlay_{i}.png", dpi=150)
+    plt.savefig(f"{output_dir}/pred/pred_{i}.png", dpi=150)
+    plt.close()
 
-    # Use the custom generator for steganography
+def highlight_target_segment(img_rgb, target_segment, i, output_dir="output"):
+    """
+    Highlight and save the target segment over the original image.
+    """
+    os.makedirs(f"{output_dir}/overlay", exist_ok=True)
+    
+    target_segment_colored = img_rgb.copy()
+    target_segment_colored[target_segment == 1] = [255, 0, 0]
+    overlay_img = cv2.addWeighted(img_rgb, 0.7, target_segment_colored, 0.3, 0)
+    
+    plt.imshow(overlay_img)
+    plt.title("Image with Target Segment")
+    plt.axis("off")
+    plt.savefig(f"{output_dir}/overlay/overlay_{i}.png", dpi=150)
+    plt.close()
+
+def embed_secret(img_rgb, target_segment, secret_message, i, segment_generator, output_dir="output"):
+    """
+    Embed the secret message into the image using LSB steganography.
+    """
+    os.makedirs(f"{output_dir}/steg", exist_ok=True)
+
+    img_pil = Image.fromarray(img_rgb)
     custom_generator = segment_generator(target_segment)
-
-    # Embed the secret message into the actual image
     secret_image = lsb.hide(img_pil, secret_message, generator=custom_generator)
 
-    # Save and display the modified image
-    output_filename = f"output/steg/output_image_with_secret_{i}.png"
-    secret_image.save(output_filename)
-    
-    # Display the image using OpenCV
-    output_image = cv2.imread(output_filename)
-    # cv2.imshow("Steganography Output", output_image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    output_path = f"{output_dir}/steg/output_image_with_secret_{i}.png"
+    secret_image.save(output_path)
+    return output_path
 
-    # Retrieve the secret message
+def retrieve_secret(img_path, target_segment, segment_generator):
+    """
+    Retrieve the hidden message from the image using the same segment-based generator.
+    """
     custom_generator_reveal = segment_generator(target_segment)
-    retrieved_message = lsb.reveal(output_filename, generator=custom_generator_reveal)
-    print(f"Retrieved Message from Image {i}: {retrieved_message}")
-    
-    # compute the accuracy of the retrieved message
-    accuracy = sum([1 for x, y in zip(secret_message, retrieved_message) if x == y]) / len(secret_message)
-    # print(f"Accuracy of the retrieved message: {accuracy * 100:.2f}%")
-    
-print("Embedding and retrieval completed.")
+    retrieved_message = lsb.reveal(img_path, generator=custom_generator_reveal)
+    return retrieved_message
 
-import numpy as np
-from sklearn.metrics import jaccard_score, f1_score, precision_score, recall_score
-import pandas as pd
-
-# Assume `imgs` contains the input images, and `segs` contains the ground truth segmentations.
-# `pred` should be the output predictions from your model for `imgs`.
-
-# Generate predictions from the model
-pred = model.predict(imgs)  # Use your trained model to predict segmentation on imgs
-
-def compute_metrics(y_true, y_pred):
+def compute_accuracy(original_msg, retrieved_msg):
     """
-    Compute segmentation metrics.
-    
-    Args:
-    y_true (np.array): Ground truth mask (flattened for each image).
-    y_pred (np.array): Predicted mask (flattened for each image).
-    
-    Returns:
-    dict: Dictionary containing IoU, Dice Coefficient, Pixel Accuracy, Mean Accuracy, Precision, Recall, and F1 Score.
+    Compute accuracy between the original and retrieved message.
     """
-    metrics = {}
+    if not retrieved_msg:
+        return 0.0
+    correct = sum(1 for x, y in zip(original_msg, retrieved_msg) if x == y)
+    return correct / len(original_msg)
 
-    # Flatten arrays for per-pixel metric calculations
-    y_true_flat = y_true.flatten()
-    y_pred_flat = y_pred.flatten()
+# def process_images(imgs, segs, pred, secret_message, target_label, segment_generator, output_dir="output"):
+#     """
+#     Main loop to process a batch of images.
+#     """
+#     max_show = len(imgs)
 
-    # Compute metrics
-    metrics['IoU'] = jaccard_score(y_true_flat, y_pred_flat, average='macro')
-    metrics['Dice Coefficient'] = f1_score(y_true_flat, y_pred_flat, average='macro')
-    metrics['Pixel Accuracy'] = np.mean(y_true_flat == y_pred_flat)
-    metrics['Mean Accuracy'] = np.mean([np.mean(y_pred[y_true == cls] == cls) for cls in np.unique(y_true)])
-    metrics['Precision'] = precision_score(y_true_flat, y_pred_flat, average='macro')
-    metrics['Recall'] = recall_score(y_true_flat, y_pred_flat, average='macro')
-    metrics['F1 Score'] = f1_score(y_true_flat, y_pred_flat, average='macro')
-    
-    return metrics
+#     for i in range(max_show):
+#         target_segment = segs[i, ..., target_label]
+#         target_segment = (target_segment > 0).astype(int)
 
-# Loop over each image in the batch, compute metrics, and average
-metrics_list = []
-for i in range(len(imgs)):
-    # Convert ground truth and prediction to binary labels if needed
-    y_true = np.argmax(segs[i], axis=-1)  # Convert to single channel with class labels
-    y_pred = np.argmax(pred[i], axis=-1)  # Convert to single channel with class labels
-    
-    # Compute metrics for the current pair
-    metrics = compute_metrics(y_true, y_pred)
-    metrics_list.append(metrics)
+#         visualize_and_save(imgs, pred, segs, i, output_dir)
 
-# Average metrics across all images in the batch
-average_metrics = {metric: np.mean([m[metric] for m in metrics_list]) for metric in metrics_list[0].keys()}
+#         img_bgr = imgs[i]
+#         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-# Display metrics in a DataFrame
-metrics_df = pd.DataFrame([average_metrics], index=["Model"])
-print(metrics_df)
+#         highlight_target_segment(img_rgb, target_segment, i, output_dir)
+
+#         steg_img_path = embed_secret(img_rgb, target_segment, secret_message, i, segment_generator, output_dir)
+#         retrieved_message = retrieve_secret(steg_img_path, target_segment, segment_generator)
+
+#         accuracy = compute_accuracy(secret_message, retrieved_message)
+#         print(f"[Image {i}] Retrieved Accuracy: {accuracy*100:.2f}%")
+
+#     print("Embedding and retrieval completed.")
+
+# Usage
+# process_images(imgs, segs, pred, secret_message, target_label, segment_generator)
